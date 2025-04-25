@@ -14,6 +14,8 @@ if ($conn->connect_error) {
     die("Conexión fallida: " . $conn->connect_error);
 }
 
+$error = "";
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $codigo_barras = $_POST['codigo_barras'];
     $nombre_repuesto = $_POST['nombre_repuesto'];
@@ -21,29 +23,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $precio = $_POST['precio'];
     $cantidad = $_POST['cantidad'];
 
+    // Validate codigo_barras for EAN-13 (optional, but recommended)
+    $is_ean13 = preg_match('/^\d{13}$/', $codigo_barras); // Must be exactly 13 digits
+
     // Insert into database
-    $sql = "INSERT INTO taller_repuestos (codigo_barras, nombre_repuesto, descripcion, precio, cantidad) 
+    $sql = "INSERT INTO repuestos (codigo_barras, nombre_repuesto, descripcion, precio, cantidad) 
             VALUES (?, ?, ?, ?, ?)";
     $stmt = $conn->prepare($sql);
     $stmt->bind_param("sssdi", $codigo_barras, $nombre_repuesto, $descripcion, $precio, $cantidad);
     
     if ($stmt->execute()) {
-        // Generate barcode image
-        $generator = new BarcodeGeneratorPNG();
-        $barcodeImage = $generator->getBarcode($codigo_barras, $generator::TYPE_CODE_128);
+        try {
+            // Generate barcode image
+            $generator = new BarcodeGeneratorPNG();
+            // Use EAN-13 if the barcode is 13 digits, otherwise fall back to Code 128
+            $barcodeType = $is_ean13 ? $generator::TYPE_EAN_13 : $generator::TYPE_CODE_128;
+            $barcodeImage = $generator->getBarcode($codigo_barras, $barcodeType);
 
-        // Save barcode image to repuestos/barcodes/
-        $barcodeDir = "barcodes";
-        $barcodeFilePath = "$barcodeDir/{$codigo_barras}.png";
-        if (!is_dir($barcodeDir)) {
-            mkdir($barcodeDir, 0755, true);
+            // Save barcode image to repuestos/barcodes/
+            $barcodeDir = "barcodes";
+            $barcodeFilePath = "$barcodeDir/{$codigo_barras}.png";
+            if (!is_dir($barcodeDir)) {
+                mkdir($barcodeDir, 0755, true);
+            }
+            file_put_contents($barcodeFilePath, $barcodeImage);
+
+            header("Location: listar.php?message=" . urlencode("Repuesto creado exitosamente."));
+            exit();
+        } catch (Exception $e) {
+            $error = "Error al generar el código de barras: " . $e->getMessage();
         }
-        file_put_contents($barcodeFilePath, $barcodeImage);
-
-        header("Location: listar.php");
-        exit();
     } else {
-        $error = "Error al crear el repuesto: " . $conn->error;
+        // Check if the error is due to a duplicate codigo_barras
+        if ($conn->errno === 1062) { // MySQL error code for duplicate entry
+            $error = "El código de barras '$codigo_barras' ya existe. Por favor, usa un código único.";
+        } else {
+            $error = "Error al crear el repuesto: " . $conn->error;
+        }
     }
     $stmt->close();
 }
@@ -69,13 +85,17 @@ $conn->close();
         .back { text-align: center; margin-top: 20px; }
         .back a { color: #007bff; text-decoration: none; }
         .error { color: red; text-align: center; }
+        .message { color: green; text-align: center; }
     </style>
 </head>
 <body>
     <div class="container">
         <h2>Crear Nuevo Repuesto</h2>
-        <?php if (isset($error)) { ?>
+        <?php if ($error) { ?>
             <p class="error"><?php echo $error; ?></p>
+        <?php } ?>
+        <?php if (isset($_GET['message'])) { ?>
+            <p class="message"><?php echo htmlspecialchars($_GET['message']); ?></p>
         <?php } ?>
         <form action="crear.php" method="POST">
             <div class="form-group">
